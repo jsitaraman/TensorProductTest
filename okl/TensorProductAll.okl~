@@ -1,0 +1,91 @@
+
+// ======================================================
+// Stage 1: Compute tmpK = At * B
+// ======================================================
+@kernel void TensorProductVolumeAll(const int M, 
+					 const int N,
+					 const int K,
+					 const int LDB,const int LDC,
+					 @restrict const double *Ar,
+					 @restrict const double *As,
+					 @restrict const double *At,
+					 @restrict const double *B,
+					 @restrict double *C
+					 const int offsetA,
+					 const int offsetB,
+					 const int offsetC,
+					 const bool addToC)
+ {  
+  for(int l=0; l < N; l++; @outer) {
+    
+    @shared double tmpK[MPad*MPad*MPad];
+    @shared double tmpJ[MPad*MPad*MPad];
+    
+    for(int i=0; i < MPad; i++;@inner) {
+	for(int j=0; j <MPad; j++;@inner) {
+	  for(int k=0; k< MPad; k++;@inner) {
+	    if ( i < K && j < K && k < M) {
+	      // Access tensor slices
+	      const int off = MPad * (j + i * K);
+	      const double *b= B + l*LDB + offsetB;
+	      double *c = C + l*LDC;
+	      double *tK = tmpK;
+	      tK[off + k] = 0.0;
+	      for (int kk = 0; kk < K; ++kk) {
+		const int offA = kk * MPad + offsetA;
+		const int indB = K * (j + kk * K) + i;
+		tK[off + k] += At[offA + k] * b[indB];
+	      }
+	    }
+	  }
+	}
+    }
+    for (int k = 0; k < MPad; ++k; @inner) {
+      for(int i= 0; i < MPad; ++i; @inner)  {
+	for(int j=0; j < MPad;++j; @inner) {
+	  if (i < K && j < M && k < M) {
+	    // Access slices
+	    const double *tK = tmpK;
+	    double *tJ = tmpJ; 
+	    const int off = MPad * (i + k * K);	    
+	    // Initialize to zero
+	    tJ[off + j] = 0.0;
+	    for (int jj = 0; jj < K; ++jj) {
+	      const int offA = jj * MPad + offsetA;
+	      const int indK = MPad * (jj + i * K) + k;
+	      tJ[off + j] += As[offA + j] * tK[indK];
+	    }	    
+	  }
+	}
+      }
+    }
+
+    for(int k=0; k < MPad; k++;@inner) {
+      for(int j=0; j < MPad; j++;@inner) {
+	for(int i=0; i< MPad; i++;@inner) {
+	  if ( i < M && j < M && k < M) {
+	    // Access slices
+	    const double *tJ = tmpJ;
+	    double *c = C + l * LDC + offsetC;
+	    const int offC = M * (j + k * M);
+	    double accum;
+	    accum=0;
+	    // Multiply-accumulate in r-direction
+#pragma omp simd
+	    for (int ii = 0; ii < K; ++ii) {
+	      const int offA = ii * MPad + offsetA;
+	      const int indJ = MPad * (ii + k * K) + j;
+	      accum += Ar[offA + i] * tJ[indJ];
+	    }
+	    // Write or add to C
+	    if (addToC) {
+	      c[offC + i] += accum;
+	    } else {
+	      c[offC + i] = accum;
+	    }
+	  }
+	}
+      }
+    }
+  }
+}

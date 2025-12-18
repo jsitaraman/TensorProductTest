@@ -1,0 +1,104 @@
+
+void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
+			     int K, int LDB, int LDC,
+			     const std::vector<double> &Ar,
+			     const std::vector<double> &As,
+			     const std::vector<double> &At,
+			     const std::vector<double> &B,
+			     std::vector<double> &C, bool addToC) {
+
+  occa::memory d_Ar = device.malloc<double>(Ar.size(), Ar.data());
+  occa::memory d_As = device.malloc<double>(As.size(), As.data());
+  occa::memory d_At = device.malloc<double>(At.size(), At.data());
+  occa::memory d_B = device.malloc<double>(B.size(), B.data());
+  occa::memory d_C = device.malloc<double>(C.size(), C.data());
+  occa::memory d_tmpK = device.malloc<double>(K * K * MPad * N);
+  occa::memory d_tmpJ = device.malloc<double>(M * K * MPad * N);
+
+  std::string kpath4 = 
+      std::string(DGX3D_OKL_DIR) + "/TensorProductAll.okl";
+  // Build kernel with appropriate properties
+  occa::properties kernelProps;
+  // Define the properties for this kernel.
+  occa::properties props;
+  //[4,4,4,65536] -> [8,8,8,65536]
+  props["defines/TPB"] = K * K * MPad;
+  props["defines/MPad"] = MPad;
+  props["compiler_flags"] = "-O3";
+  occa::kernel kAll = device.buildKernel(kpath4, "TensorProductVolumeAll", props);
+#if TIMER
+  Timer stopwatch;
+  stopwatch.tick();
+  int add_to_C = addToC;
+  for (int itry = 0; itry < NTRYS; itry++) {
+#endif
+    kAll(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+#if TIMER
+  }
+  printf("OCCA unified kernel Compute time = %e\n", stopwatch.tock() / NTRYS);
+#endif
+  // copy back
+  d_C.copyTo(C.data());
+}
+
+void TensorProductVolumeSplit_OCCA(occa::device &device, int M, int MPad, int N,
+                                   int K, int LDB, int LDC,
+                                   const std::vector<double> &Ar,
+                                   const std::vector<double> &As,
+                                   const std::vector<double> &At,
+                                   const std::vector<double> &B,
+                                   std::vector<double> &C, bool addToC) {
+
+  occa::memory d_Ar = device.malloc<double>(Ar.size(), Ar.data());
+  occa::memory d_As = device.malloc<double>(As.size(), As.data());
+  occa::memory d_At = device.malloc<double>(At.size(), At.data());
+  occa::memory d_B = device.malloc<double>(B.size(), B.data());
+  occa::memory d_C = device.malloc<double>(C.size(), C.data());
+  occa::memory d_tmpK = device.malloc<double>(K * K * MPad * N);
+  occa::memory d_tmpJ = device.malloc<double>(M * K * MPad * N);
+
+  std::string kpath1 =
+      std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeStage1.okl";
+  std::string kpath2 =
+      std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeStage2.okl";
+  std::string kpath3 =
+      std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeStage3.okl";
+  // Build kernel with appropriate properties
+  occa::properties kernelProps;
+  // Define the properties for this kernel.
+  occa::properties props;
+  //[4,4,4,16384] -> [8,8,8,16384]
+
+  props["defines/TPB"] = K * K * MPad;
+  props["defines/MPad"] = MPad;
+  props["compiler_flags"] = "-O3";
+  occa::settings()["verbose"] = true;
+  occa::kernel kInit = device.buildKernel(kpath1, "InitCToZero", props);
+  occa::kernel kStage1 =
+      device.buildKernel(kpath1, "TensorProductVolumeStage1", props);
+  props["defines/TPB"] = K * M * MPad;
+  occa::kernel kStage2 =
+      device.buildKernel(kpath2, "TensorProductVolumeStage2", props);
+  props["defines/TPB"] = M * M * MPad;
+  occa::kernel kStage3 =
+      device.buildKernel(kpath3, "TensorProductVolumeStage3", props);
+#if TIMER
+  Timer stopwatch;
+  stopwatch.tick();
+  int add_to_C = addToC;
+  for (int itry = 0; itry < NTRYS; itry++) {
+#endif
+    if (addToC)
+      kInit(M, N, LDC, 0, d_C);
+    // Launch tiled kernels
+    kStage1(M, N, K, LDB, d_At, d_B, d_tmpK, N * K * K * MPad, 0, 0);
+    kStage2(M, N, K, d_As, d_tmpK, d_tmpJ, N * K * MPad * MPad, 0);
+    kStage3(M, N, K, d_Ar, d_tmpJ, d_C, LDC, N * MPad * MPad * MPad, 0, 0,
+          add_to_C);
+#if TIMER
+  }
+  printf("OCCA Split kernels Compute time = %e\n", stopwatch.tock() / NTRYS);
+#endif
+  // copy back
+  d_C.copyTo(C.data());
+}

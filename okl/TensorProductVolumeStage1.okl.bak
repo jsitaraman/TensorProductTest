@@ -1,0 +1,50 @@
+// Initialization to zero of the C-array.
+@kernel void InitCToZero(const int M,
+                         const int N,
+                         const int LDC,
+                         const int offsetC,
+                         @restrict double *C) {
+  for(int idx=0;idx < N*LDC; ++idx; @tile(TPB, @outer,@inner)) {
+      if (idx < N*LDC) {
+        C[offsetC+idx] = 0.0;
+      }	
+  }
+}
+
+// ======================================================
+// Stage 1: Compute tmpK = At * B
+// ======================================================
+@kernel void TensorProductVolumeStage1(const int N,
+                                       const int K,
+                                       const int LDB,
+                                       const double *At,
+                                       const double *B,
+                                       double *tmpK,
+                                       const int totalWork,
+                                       const int offsetA,
+                                       const int offsetB) {
+  const int K2=K*MPad;
+  const int K3=K*K2;
+  for(int idx=0;idx < totalWork; ++idx; @tile(TPB, @outer,@inner)) {
+      // Decode (l, i, j, k)
+      // idx = l*(K*K*MPad) + i *(K*MPad) + j * MPad + k
+      const int l = idx / K3;
+      const int rem1 = idx -l*K3;
+      const int i = rem1/K2;
+      const int rem2 = rem1-i*K2;
+      const int j = rem2/MPad;
+      const int k = rem2 - j*MPad;
+
+      // Access tensor slices
+      const double *b = B + l * LDB + offsetB;
+      double *tK = tmpK + l * (K * K * MPad);
+      const int off = MPad * (j + i * K);
+
+      tK[off + k] = 0.0;
+      for (int kk = 0; kk < K; ++kk) {
+         const int offA = kk * MPad + offsetA;
+         const int indB = K * (j + kk * K) + i;
+         tK[off + k] += At[offA + k] * b[indB];
+      }
+  }
+}

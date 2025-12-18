@@ -1,0 +1,37 @@
+// ======================================================
+// Stage 2: Compute tmpJ = As * tmpK
+// ======================================================
+@kernel void TensorProductVolumeStage2(const int M,
+                                       const int N,
+                                       const int K,
+                                       @restrict const double *As,
+                                       @restrict const double *tmpK,
+                                       @restrict double *tmpJ,
+                                       const int totalWork,
+                                       const int offsetA) {
+
+  for(int l=0; l < N; l++; @outer) {
+    for(int i=0; i < K; i++; @inner) {
+      for(int k=0; k < M; k++;@inner) {
+        for(int j=0; j< M; j++;@inner) {
+	
+	  // Access slices
+	  const double *tK = tmpK + l * (K * K * MPad);
+	  double *tJ = tmpJ + l * (M * K * MPad);
+	  const int off = MPad * (i + k * K);
+	  
+	  // Initialize to zero
+	  tJ[off + j] = 0.0;
+	  // Multiply-accumulate in s-direction
+#pragma omp simd
+	  for (int jj = 0; jj < K; ++jj) {
+	    const int offA = jj * MPad + offsetA;
+	    const int indK = MPad * (jj + i * K) + k;
+	    tJ[off + j] += As[offA + j] * tK[indK];
+	  }
+	}
+      }
+    }
+  }
+}
+
