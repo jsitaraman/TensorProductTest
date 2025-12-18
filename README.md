@@ -3,6 +3,7 @@ To build
 --------
 
 export CUTENSOR_ROOT = /path/to/cutensor
+
 export LAPACK_ROOT = /path/to/lapack/lib64
 mkdir build
 cd build
