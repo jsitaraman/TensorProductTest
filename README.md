@@ -5,9 +5,7 @@ To build
 export CUTENSOR_ROOT = /path/to/cutensor
 export LAPACK_ROOT = /path/to/lapack/lib64
 
-mkdir build
-cd build
-cmake ..
+mkdir build; cd build; cmake ..; make
 
 This is where these are on my system
 #export CUTENSOR_ROOT=/home/jaina/software/libcutensor-linux-x86_64-2.3.1.0_cuda12-archive
