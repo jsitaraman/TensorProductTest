@@ -71,7 +71,7 @@
 	    double accum;
 	    accum=0;
 	    // Multiply-accumulate in r-direction
-#pragma omp simd
+//#pragma omp simd
 	    for (int ii = 0; ii < K; ++ii) {
 	      const int offA = ii * MPad + offsetA;
 	      const int indJ = MPad * (ii + k * K) + j;
