@@ -1,3 +1,17 @@
+int nearestPower2(int n) {
+    if ((n & (n - 1)) == 0) { // Correct power of 2 check
+      return n;
+    }
+    // Set all bits to the right of the most significant bit to 1
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n++;
+    return n;
+};
 
 void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
 			     int K, int LDB, int LDC,
@@ -17,24 +31,56 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
 
   std::string kpath4 = 
       std::string(DGX3D_OKL_DIR) + "/TensorProductAll.okl";
+  std::string kpath5 = 
+      std::string(DGX3D_OKL_DIR) + "/TensorProductAllGeneric.okl";
   // Build kernel with appropriate properties
   occa::properties kernelProps;
   // Define the properties for this kernel.
-  occa::properties props;
+  occa::properties props,props2;
   //[4,4,4,65536] -> [8,8,8,65536]
+
+  // build the power 2 kernel
+  // TODO try including TPB in to this
+  //bool pow2kernel= ((M & (M-1)) == 0 && (K & (K-1)) == 0 && M==2*K);
+  bool pow2kernel= (M==2*K);
   props["defines/TPB"] = K * K * MPad;
   props["defines/M"] = MPad;
   props["defines/K"] = K;
   props["defines/N"] = N;
   props["compiler_flags"] = "-O3"; // -lineinfo";
-  occa::kernel kAll = device.buildKernel(kpath4, "TensorProductVolumeAll", props);
+  occa::kernel kPow2 = device.buildKernel(kpath4,"TensorProductVolumeAll",props);
+  
+  // build the generic kernel
+  int TPB = 128;		      
+  int Mp = nearestPower2(M);
+  int Kp = nearestPower2(K);
+  props2["defines/MPad"] = nearestPower2(M);
+  props2["defines/KPad"] = nearestPower2(K);
+  int Np = N*(Mp*Kp*Kp)/TPB;
+  while (Np > N) {
+   TPB*=2;
+   Np = N*(Mp*Kp*Kp)/TPB;
+  }
+  props2["defines/blockDimX"] = TPB/(Mp*Kp);
+  if (!pow2kernel) printf("Using generic kernel with (Mp,Kp,Np)=(%d,%d,%d) for (M,K,N)=(%d %d %d)\n",Mp,Kp,Np,M,K,N);
+  if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
+  props2["defines/Nblocks"] = Np;
+  props2["defines/fac"] = static_cast<int>(std::round(N/Np));
+  props2["compiler_flags"] = "-O3"; // -lineinfo";
+  occa::kernel kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric", props2);
+  
+  
 #if TIMER
   Timer stopwatch;
   stopwatch.tick();
   int add_to_C = addToC;
   for (int itry = 0; itry < NTRYS; itry++) {
 #endif
-    kAll(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+    if (pow2kernel) {
+      kPow2(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+    } else {
+      kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+    }
 #if TIMER
   }
   auto duration=stopwatch.tock()/ NTRYS;

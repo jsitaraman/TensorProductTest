@@ -2,16 +2,16 @@
 // ======================================================
 // Stage 1: Compute tmpK = At * B
 // ======================================================
-@kernel void TensorProductVolumeAll(      const int LDB,const int LDC,
-					 @restrict const double *Ar,
-					 @restrict const double *As,
-					 @restrict const double *At,
-					 @restrict const double *B,
-					 @restrict double *C,
-					 const int offsetA,
-					 const int offsetB,
-					 const int offsetC,
-					 const bool addToC)
+@kernel void TensorProductVolumeAll( const int LDB,const int LDC,
+				     @restrict const double *Ar,
+				     @restrict const double *As,
+				     @restrict const double *At,
+				     @restrict const double *B,
+				     @restrict double *C,
+				     const int offsetA,
+				     const int offsetB,
+				     const int offsetC,
+				     const bool addToC)
  {  
   for(int l=0; l < N; l++; @outer) {
     
@@ -41,7 +41,7 @@
 	      double *c = C + l*LDC;
 	      double *tK = tmpK;
 	      double AA[K],BB[K];
-//#pragma unroll 	      
+#pragma unroll 	      
 	      for(int kk=0; kk < K; ++kk) {
 	      	 const int offA = kk * M + offsetA;
 		 const int indB = K * (j + kk * K) + i;
@@ -49,7 +49,7 @@
 		 BB[kk] = b[indB];
 	      }
 	      double sum=0;
-//#pragma unroll 	      
+#pragma unroll 	      
 	      for (int kk = 0; kk < K; ++kk) {
 		sum += AA[kk]*BB[kk];
 	      }
@@ -68,7 +68,7 @@
 	    const double *tK = tmpK;
 	    double *tJ = tmpJ;
 	    double AA[K], BB[K];
-//#pragma unroll 	    
+#pragma unroll 	    
 	    for(int jj=0;jj<K;jj++) {
 	      const int offA = jj * M + offsetA;
 	      const int indK = M * (jj + i * K) + k;
@@ -77,7 +77,7 @@
 	    }
 	    const int off = M * (i + k * K);	    
 	    double sum =0;
-//# pragma unroll 	    
+# pragma unroll 	    
 	    for (int jj = 0; jj < K; ++jj) {
 	      sum += AA[jj]*BB[jj];
 	    }
@@ -98,7 +98,7 @@
 	    const double *tJ = tmpJ;
 	    double *c = C + l * LDC + offsetC;
 	    const int offC = M * (j + k * M);
-//#pragma unroll 	    
+#pragma unroll 	    
 	    double AA[K], BB[K];
 	    for(int ii=0;ii<K;++ii) {
 	      const int offA = ii * M + offsetA;
@@ -109,8 +109,8 @@
 	    double accum;
 	    accum=0;
 	    // Multiply-accumulate in r-direction
-//#pragma omp simd
-//#pragma unroll 
+#pragma omp simd
+#pragma unroll 
 	    for (int ii = 0; ii < K; ++ii) {
 	      accum += AA[ii]*BB[ii];
 	    }
@@ -126,3 +126,6 @@
     }
   }
 }
+
+
+
