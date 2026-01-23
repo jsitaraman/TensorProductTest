@@ -23,8 +23,10 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
   occa::properties props;
   //[4,4,4,65536] -> [8,8,8,65536]
   props["defines/TPB"] = K * K * MPad;
-  props["defines/MPad"] = MPad;
-  props["compiler_flags"] = "-O3 -lineinfo";
+  props["defines/M"] = MPad;
+  props["defines/K"] = K;
+  props["defines/N"] = N;
+  props["compiler_flags"] = "-O3"; // -lineinfo";
   occa::kernel kAll = device.buildKernel(kpath4, "TensorProductVolumeAll", props);
 #if TIMER
   Timer stopwatch;
@@ -32,7 +34,7 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
   int add_to_C = addToC;
   for (int itry = 0; itry < NTRYS; itry++) {
 #endif
-    kAll(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+    kAll(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
 #if TIMER
   }
   auto duration=stopwatch.tock()/ NTRYS;
@@ -73,7 +75,7 @@ void TensorProductVolumeSplit_OCCA(occa::device &device, int M, int MPad, int N,
 
   props["defines/TPB"] = K * K * MPad;
   props["defines/MPad"] = MPad;
-  props["compiler_flags"] = "-O3 -lineinfo";
+  props["compiler_flags"] = "-O3";// -lineinfo";
   occa::settings()["verbose"] = true;
   occa::kernel kInit = device.buildKernel(kpath1, "InitCToZero", props);
   occa::kernel kStage1 =

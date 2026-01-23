@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
   std::cout << "---------------------------------\n";
   // small test sizes (easy to debug); adjust as needed
   const int M = 8;
-  const int MPad = 8; // >= M
+  const int MPad = M;
   const int K = 4;
   const int N = 8192 * 8;
 
@@ -143,10 +143,11 @@ int main(int argc, char **argv) {
   ///////////////////////////////////////////////////////////
   // run occa implementation
   ///////////////////////////////////////////////////////////
-
+#if 0
   TensorProductVolumeSplit_OCCA(device, M, MPad, N, K, LDB, LDC, Ar, As, At, B,
                                 C_occa, addToC);
   maxAbsDiff(C_gemm, C_occa, "original", "occa");
+#endif
 
   // TODO does not work yet
   if (use_gpu) {
