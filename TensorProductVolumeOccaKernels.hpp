@@ -42,34 +42,53 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
   // build the power 2 kernel
   // TODO try including TPB in to this
   //bool pow2kernel= ((M & (M-1)) == 0 && (K & (K-1)) == 0 && M==2*K);
-  bool pow2kernel= (M==2*K);
+  bool pow2kernel= (M==2*K) || (K==2*M);
   props["defines/TPB"] = K * K * MPad;
   props["defines/M"] = MPad;
   props["defines/K"] = K;
   props["defines/N"] = N;
   props["compiler_flags"] = "-O3"; // -lineinfo";
-  occa::kernel kPow2 = device.buildKernel(kpath4,"TensorProductVolumeAll",props);
+  occa::kernel kPow2;
+  if (M > K) {
+    kPow2 = device.buildKernel(kpath4,"TensorProductVolumeAll_M_gt_K",props);
+  }
+  else {
+    kPow2 = device.buildKernel(kpath4,"TensorProductVolumeAll_K_gt_M",props);
+  }
   
   // build the generic kernel
+  occa::kernel kGeneric;
   int TPB = 128;		      
   int Mp = nearestPower2(M);
   int Kp = nearestPower2(K);
+  props2["compiler_flags"] = "-O3"; // -lineinfo";
   props2["defines/MPad"] = nearestPower2(M);
   props2["defines/KPad"] = nearestPower2(K);
-  int Np = N*(Mp*Kp*Kp)/TPB;
-  while (Np > N) {
-   TPB*=2;
-   Np = N*(Mp*Kp*Kp)/TPB;
+  if (M > K) {
+    int Np = N*(Mp*Kp*Kp)/TPB;
+    while (Np > N) {
+      TPB*=2;
+      Np = N*(Mp*Kp*Kp)/TPB;
+    }
+    props2["defines/blockDimX"] = TPB/(Mp*Kp);
+    if (!pow2kernel) printf("Using generic kernel with (Mp,Kp,Np)=(%d,%d,%d) for (M,K,N)=(%d %d %d)\n",Mp,Kp,Np,M,K,N);
+    if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
+    props2["defines/Nblocks"] = Np;
+    props2["defines/fac"] = static_cast<int>(std::round(N/Np));
+    kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_M_gt_K", props2);
+  } else {
+    int Np = N*(Mp*Mp*Mp)/TPB;
+    while (Np > N) {
+      TPB*=2;
+      Np = N*(Mp*Mp*Mp)/TPB;
+    }
+    props2["defines/blockDimX"] = TPB/(Mp*Mp);
+    if (!pow2kernel) printf("Using generic kernel with (Mp,Kp,Np)=(%d,%d,%d) for (M,K,N)=(%d %d %d)\n",Mp,Kp,Np,M,K,N);
+    if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
+    props2["defines/Nblocks"] = Np;
+    props2["defines/fac"] = static_cast<int>(std::round(N/Np));
+    kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_K_gt_M", props2);
   }
-  props2["defines/blockDimX"] = TPB/(Mp*Kp);
-  if (!pow2kernel) printf("Using generic kernel with (Mp,Kp,Np)=(%d,%d,%d) for (M,K,N)=(%d %d %d)\n",Mp,Kp,Np,M,K,N);
-  if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
-  props2["defines/Nblocks"] = Np;
-  props2["defines/fac"] = static_cast<int>(std::round(N/Np));
-  props2["compiler_flags"] = "-O3"; // -lineinfo";
-  occa::kernel kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric", props2);
-  
-  
 #if TIMER
   Timer stopwatch;
   stopwatch.tick();
@@ -78,7 +97,8 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
 #endif
     if (pow2kernel) {
       kPow2(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
-    } else {
+    }
+    else {
       kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
     }
 #if TIMER

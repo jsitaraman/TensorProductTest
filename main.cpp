@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
   occa::device device;
   bool use_gpu = false;
   // take in some arguments
-  if (argc == 2) {
+  if (argc >= 2) {
     if (strstr(argv[1], "--gpu")) {
       device.setup({{"mode", "CUDA"}, {"device_id", 0}});
       occa::setDevice(device);
@@ -67,15 +67,17 @@ int main(int argc, char **argv) {
       device.setup({{"mode", "Serial"}});
     }
   } else {
-    device.setup({{"mode", "Serial"}});
+    printf("Example usage : ./tensor_product_test --gpu 8 4 \n");
+    printf("--gpu, --openmp and --serial are supported and (M,K)=(8,4) in example above\n");
+    exit(0);
   }
   std::cout << "-------     Device used -------- \n";
   std::cout << device.properties() << std::endl;
   std::cout << "---------------------------------\n";
   // small test sizes (easy to debug); adjust as needed
-  const int M = 8;
+  const int M = std::stoi(argv[2]);
   const int MPad = M;
-  const int K = 4;
+  const int K = std::stoi(argv[3]);
   const int N = 8192 * 8;
 
   const int LDB = K * K * K; // per-slice stride in elements (caller semantics)

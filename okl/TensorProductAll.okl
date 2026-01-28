@@ -2,7 +2,7 @@
 // ======================================================
 // Stage 1: Compute tmpK = At * B
 // ======================================================
-@kernel void TensorProductVolumeAll( const int LDB,const int LDC,
+@kernel void TensorProductVolumeAll_M_gt_K( const int LDB,const int LDC,
 				     @restrict const double *Ar,
 				     @restrict const double *As,
 				     @restrict const double *At,
@@ -15,8 +15,8 @@
  {  
   for(int l=0; l < N; l++; @outer) {
     
-    @shared double tmpK[M*M*M];
-    @shared double tmpJ[M*M*M];
+    @shared double tmpK[K*K*M];
+    @shared double tmpJ[K*M*M];
     /*
     @shared double At[K*M], Ar[K*M], As[K*M];
 
@@ -126,6 +126,138 @@
     }
   }
 }
+
+
+// ======================================================
+// Stage 1: Compute tmpK = At * B
+// ======================================================
+@kernel void TensorProductVolumeAll_K_gt_M( const int LDB,const int LDC,
+				     @restrict const double *Ar,
+				     @restrict const double *As,
+				     @restrict const double *At,
+				     @restrict const double *B,
+				     @restrict double *C,
+				     const int offsetA,
+				     const int offsetB,
+				     const int offsetC,
+				     const bool addToC)
+ {  
+  for(int l=0; l < N; l++; @outer) {
+    
+    @shared double tmpK[K*K*M];
+    @shared double tmpJ[K*M*M];
+    /*
+    @shared double At[K*M], Ar[K*M], As[K*M];
+
+   for(int i=0; i< K; i++;@inner)  {
+     for(int j=0; j< K; j++;@inner) {
+      for(int k=0; k < M; k++; @inner) {
+       if (i <3) {
+        if (i==0) Ar[j*M + k] = Arr[j*M+ k + offsetA];
+        if (i==1) As[j*M + k] = Ass[j*M+ k + offsetA];
+        if (i==2) At[j*M + k] = Att[j*M+ k + offsetA];
+       }
+      }
+     }
+   }
+    */
+
+
+   for(int ii=0; ii < M; ii++;@inner) {
+    for(int jj=0; jj <M; jj++;@inner) {
+       for(int k=0; k< M; k++;@inner) {
+	 for(int tid=0;tid<4;tid++) {
+	     int i = ii + (tid%2)*M;
+	     int j = jj + (tid/2)*M;
+	     
+	     // Access tensor slices
+	     const int off = M * (j + i * K);
+	     const double *b= B + l*LDB + offsetB;
+	     double *c = C + l*LDC;
+	     double *tK = tmpK;
+	     double AA[K],BB[K];
+#pragma unroll 	      
+	     for(int kk=0; kk < K; ++kk) {
+		const int offA = kk * M + offsetA;
+		const int indB = K * (j + kk * K) + i;
+		AA[kk] = At[offA + k];
+		BB[kk] = b[indB];
+	     }
+	     double sum=0;
+#pragma unroll 	      
+	      for (int kk = 0; kk < K; ++kk) {
+		sum += AA[kk]*BB[kk];
+	      }
+	      tK[off+k] = sum;
+	 }
+       }
+    }
+   }
+
+   for(int ii= 0; ii < M ; ++ii; @inner)  {
+      for (int k = 0; k < M; ++k; @inner) {
+	for(int j=0; j < M; ++j; @inner) {
+          // this assumes M/K = 2
+	  for(int tid=0;tid < 2;tid++) {
+	    int i=ii+tid*M;
+	    // Access slices
+	    const double *tK = tmpK;
+	    double *tJ = tmpJ;
+	    double AA[K], BB[K];
+#pragma unroll 	    
+	    for(int jj=0;jj<K;jj++) {
+	      const int offA = jj * M + offsetA;
+	      const int indK = M * (jj + i * K) + k;
+	      AA[jj] = As[offA + j] ;
+	      BB[jj] = tK[indK];
+	    }
+	    const int off = M * (i + k * K);	    
+	    double sum =0;
+# pragma unroll 	    
+	    for (int jj = 0; jj < K; ++jj) {
+	      sum += AA[jj]*BB[jj];
+	    }
+	    tJ[off+j] =sum;
+	  }
+	}
+      }
+    }
+
+   for(int k=0; k < M; k++;@inner) {
+     for(int j=0; j < M; j++;@inner) {
+        for(int i=0; i< M; i++;@inner) {
+	  // Access slices
+	  const double *tJ = tmpJ;
+	  double *c = C + l * LDC + offsetC;
+	  const int offC = M * (j + k * M);
+#pragma unroll 	    
+	  double AA[K], BB[K];
+	  for(int ii=0;ii<K;++ii) {
+	    const int offA = ii * M + offsetA;
+	    const int indJ = M * (ii + k * K) + j;
+	    AA[ii] = Ar[offA + i];
+	    BB[ii] = tJ[indJ];
+	  }
+	  double accum;
+	  accum=0;
+	  // Multiply-accumulate in r-direction
+#pragma omp simd
+#pragma unroll 
+	  for (int ii = 0; ii < K; ++ii) {
+	    accum += AA[ii]*BB[ii];
+	  }
+	  // Write or add to C
+	  if (addToC) {
+	    c[offC + i] += accum;
+	  } else {
+	    c[offC + i] = accum;
+	  }
+	}
+     }
+   }
+  }
+ }
+
 
 
 
