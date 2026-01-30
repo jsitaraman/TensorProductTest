@@ -3,9 +3,9 @@
 // Stage 1: Compute tmpK = At * B
 // ======================================================
 @kernel void TensorProductVolumeAll_M_gt_K( const int LDB,const int LDC,
-				     @restrict const double *Ar,
-				     @restrict const double *As,
-				     @restrict const double *At,
+				     @restrict const double *Arr,
+				     @restrict const double *Ass,
+				     @restrict const double *Att,
 				     @restrict const double *B,
 				     @restrict double *C,
 				     const int offsetA,
@@ -17,30 +17,34 @@
     
     @shared double tmpK[K*K*M];
     @shared double tmpJ[K*M*M];
-    /*
+    @shared double BS[K*K*K];
     @shared double At[K*M], Ar[K*M], As[K*M];
 
-   for(int i=0; i< K; i++;@inner)  {
+   for(int k=0; k< K; k++;@inner)  {
      for(int j=0; j< K; j++;@inner) {
-      for(int k=0; k < M; k++; @inner) {
-       if (i <3) {
-        if (i==0) Ar[j*M + k] = Arr[j*M+ k + offsetA];
-        if (i==1) As[j*M + k] = Ass[j*M+ k + offsetA];
-        if (i==2) At[j*M + k] = Att[j*M+ k + offsetA];
-       }
+      for(int i=0; i < M; i++; @inner) {
+        if (k==0) {
+          Ar[j*M + i] = Arr[j*M+ i + offsetA];
+          As[j*M + i] = Ass[j*M+ i + offsetA];
+          At[j*M + i] = Att[j*M+ i + offsetA];
       }
+      if (i < K) {
+         int indB = K*(j+k*K)+i;
+         BS[indB] = B[l *LDB + offsetB + indB];
      }
+    }
    }
-    */
-   for(int i=0; i < K; i++;@inner) {
+  }
+  
+  for(int i=0; i < K; i++;@inner) {
     for(int j=0; j <K; j++;@inner) {
        for(int k=0; k< M; k++;@inner) {
 	      // Access tensor slices
 	      const int off = M * (j + i * K);
-	      const double *b= B + l*LDB + offsetB;
-	      double *c = C + l*LDC;
+	      const double *b= BS;
 	      double *tK = tmpK;
 	      double AA[K],BB[K];
+	      double sum=0;
 #pragma unroll 	      
 	      for(int kk=0; kk < K; ++kk) {
 	      	 const int offA = kk * M + offsetA;
@@ -48,10 +52,9 @@
 		 AA[kk] = At[offA + k];
 		 BB[kk] = b[indB];
 	      }
-	      double sum=0;
 #pragma unroll 	      
 	      for (int kk = 0; kk < K; ++kk) {
-		sum += AA[kk]*BB[kk];
+	      	sum += AA[kk]*BB[kk];
 	      }
 	      tK[off+k] = sum;
 	  }
@@ -68,6 +71,7 @@
 	    const double *tK = tmpK;
 	    double *tJ = tmpJ;
 	    double AA[K], BB[K];
+	    double sum =0;
 #pragma unroll 	    
 	    for(int jj=0;jj<K;jj++) {
 	      const int offA = jj * M + offsetA;
@@ -76,7 +80,6 @@
 	      BB[jj] = tK[indK];
 	    }
 	    const int off = M * (i + k * K);	    
-	    double sum =0;
 # pragma unroll 	    
 	    for (int jj = 0; jj < K; ++jj) {
 	      sum += AA[jj]*BB[jj];
@@ -100,14 +103,13 @@
 	    const int offC = M * (j + k * M);
 #pragma unroll 	    
 	    double AA[K], BB[K];
+            double accum =0;
 	    for(int ii=0;ii<K;++ii) {
 	      const int offA = ii * M + offsetA;
 	      const int indJ = M * (ii + k * K) + j;
 	      AA[ii] = Ar[offA + i];
 	      BB[ii] = tJ[indJ];
 	    }
-	    double accum;
-	    accum=0;
 	    // Multiply-accumulate in r-direction
 #pragma omp simd
 #pragma unroll 
@@ -132,9 +134,9 @@
 // Stage 1: Compute tmpK = At * B
 // ======================================================
 @kernel void TensorProductVolumeAll_K_gt_M( const int LDB,const int LDC,
-				     @restrict const double *Ar,
-				     @restrict const double *As,
-				     @restrict const double *At,
+				     @restrict const double *Arr,
+				     @restrict const double *Ass,
+				     @restrict const double *Att,
 				     @restrict const double *B,
 				     @restrict double *C,
 				     const int offsetA,
@@ -143,36 +145,42 @@
 				     const bool addToC)
  {  
   for(int l=0; l < N; l++; @outer) {
-    
     @shared double tmpK[K*K*M];
-    @shared double tmpJ[K*M*M];
-    /*
+    @shared double tmpJ[K*M*M];  
+     
     @shared double At[K*M], Ar[K*M], As[K*M];
+    @shared double BS[K*K*K];
 
-   for(int i=0; i< K; i++;@inner)  {
-     for(int j=0; j< K; j++;@inner) {
-      for(int k=0; k < M; k++; @inner) {
-       if (i <3) {
-        if (i==0) Ar[j*M + k] = Arr[j*M+ k + offsetA];
-        if (i==1) As[j*M + k] = Ass[j*M+ k + offsetA];
-        if (i==2) At[j*M + k] = Att[j*M+ k + offsetA];
+   for(int k=0; k< M; k++;@inner)  {
+     for(int jj=0; jj< M; jj++;@inner) {
+      for(int ii=0; ii < M; ii++; @inner) {
+        for(int tid=0; tid < 4; tid++) {
+          int i = ii + (tid%2)*M;
+          int j = jj + (tid/2)*M;
+          
+          if (k==0) {
+            Ar[j*M + ii] = Arr[j*M+ ii + offsetA]; 
+            As[j*M + ii] = Ass[j*M+ ii + offsetA];
+            At[j*M + ii] = Att[j*M+ ii + offsetA];
+          }
+          int indB = K*(j + k*K) + i;
+          BS[indB] = B[l*LDB + offsetB + indB];
+          indB = K*(j + (k+M)*K) + i;
+          BS[indB] = B[l*LDB + offsetB + indB];
        }
       }
      }
-   }
-    */
+   } 
 
-
-   for(int ii=0; ii < M; ii++;@inner) {
+  for(int ii=0; ii < M; ii++;@inner) {
     for(int jj=0; jj <M; jj++;@inner) {
        for(int k=0; k< M; k++;@inner) {
 	 for(int tid=0;tid<4;tid++) {
 	     int i = ii + (tid%2)*M;
 	     int j = jj + (tid/2)*M;
-	     
 	     // Access tensor slices
 	     const int off = M * (j + i * K);
-	     const double *b= B + l*LDB + offsetB;
+	     const double *b= BS; // B + l*LDB + offsetB;
 	     double *c = C + l*LDC;
 	     double *tK = tmpK;
 	     double AA[K],BB[K];

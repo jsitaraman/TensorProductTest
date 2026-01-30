@@ -1,0 +1,329 @@
+// ======================================================
+// Stage 1: Compute tmpK = At * B
+// ======================================================
+@kernel void TensorProductVolumeAllGeneric_M_gt_K( const int M, const int N, const int K,
+                                         const int LDB,const int LDC,
+					 @restrict const double *Ar,
+					 @restrict const double *As,
+					 @restrict const double *At,
+					 @restrict const double *B,
+					 @restrict double *C,
+					 const int offsetA,
+					 const int offsetB,
+					 const int offsetC,
+					 const bool addToC)
+ {  
+  for(int block=0; block < Nblocks; block++; @outer) {
+
+    const int M3 = MPad*MPad*MPad;
+    const int K3  = KPad*KPad*KPad;
+    @shared double tmpK[fac*MPad*MPad*MPad];
+    @shared double tmpJ[fac*MPad*MPad*MPad];
+    @shared double BS[fac*KPad*KPad*KPad];
+
+   for(int tx=0; tx < blockDimX; tx++;@inner) {
+    for(int j=0; j <KPad; j++;@inner) {
+      for(int k=0; k< MPad; k++;@inner) {
+         if (j < K && k < K) {
+           int l = fac*block+ tx/KPad;
+           int i = tx % KPad;
+           if (i < K) {
+             const double *b= B + l*LDB + offsetB;
+             int indB = K * (j + k * K) + i;
+             int ll = (tx/KPad)*K3;
+             BS[indB + ll] = B[l*LDB + offsetB + indB];
+           }
+        }
+      }
+     }
+    }
+    
+    for(int tx=0; tx < blockDimX ; tx++;@inner) {
+     for(int j=0; j <KPad; j++;@inner) {
+       for(int k=0; k< MPad; k++;@inner) {
+	 int l = fac*block+ tx/KPad;
+	 int i = tx % KPad;	 
+          if (i < K && j < K && k < M && l < N) {
+	      // Access tensor slices
+	      const int off = M * (j + i * K) + (tx/KPad)*M3;
+	      //const double *b= B + l*LDB + offsetB;
+              const double *b = BS + (tx/KPad)*K3;
+	      double *tK = tmpK;
+	      double AA[KPad],BB[KPad];
+#pragma unroll 	      
+	      for(int kk=0; kk < KPad; ++kk) {
+	      	 const int offA = kk * M + offsetA;
+		 const int indB = K * (j + kk * K) + i;
+                 if (kk < K) {
+		  AA[kk] = At[offA + k];
+		  BB[kk] = b[indB];
+                 } else { 
+                  AA[kk]=0;
+                  BB[kk]=0;
+                 }
+	      }
+	      double sum=0;
+#pragma unroll 	      
+	      for (int kk = 0; kk < KPad; ++kk) {
+		sum += AA[kk]*BB[kk];
+	      }
+	      tK[off+k] = sum;
+	  }
+        }
+      }
+    }
+
+    for(int tx= 0; tx < blockDimX ; ++tx; @inner)  {
+      for (int kk = 0; kk < KPad; ++kk; @inner) {
+	for(int j=0; j < MPad;++j; @inner) {
+	  int l = fac*block+ tx/KPad;
+	  int i = tx % KPad;	 
+	  // this assumes M/K = 2
+	  for(int tid=0;tid < 2;tid++) {
+	    int k=kk+tid*KPad;
+	    if (i < K && j < M && k < M && l < N) {
+	      // Access slices
+	      const double *tK = tmpK + (tx/KPad)*M3;
+	      double *tJ = tmpJ;
+	      double AA[KPad], BB[KPad];
+#pragma unroll 	    
+	      for(int jj=0;jj<KPad;jj++) {
+                if (jj < K) {
+		  const int offA = jj * M + offsetA;
+		  const int indK = M * (jj + i * K) + k;
+		  AA[jj] = As[offA + j] ;
+		  BB[jj] = tK[indK];
+                } else {
+                  AA[jj]=0;
+                  BB[jj]=0;
+                }
+	      }
+	      const int off = M * (i + k * K) + (tx/KPad)*M3;
+	      double sum =0;
+#pragma unroll 	    
+	      for (int jj = 0; jj < KPad; ++jj) {
+		sum += AA[jj]*BB[jj];
+	      }
+	      tJ[off+j] =sum;
+	    }
+	  }
+	}
+      }
+    }
+
+   for(int tx=0;tx < blockDimX; tx++;@inner) {
+     for(int jj=0; jj < KPad; jj++;@inner) {
+        for(int i=0; i< MPad; i++;@inner) {
+	  int l = fac*block+ tx/KPad;
+	  int kk = tx % KPad;	 
+          // This assumes MPad/KPad = 2
+	  for(int tid=0;tid<4;tid++) {
+	    int k = kk + (tid%2)*KPad;
+	    int j = jj + (tid/2)*KPad;
+	    if (i < M && j < M && k < M && l < N) {
+	      // Access slices
+	      const double *tJ = tmpJ + (tx/KPad)*M3;
+	      double *c = C + l * LDC + offsetC;
+	      const int offC = M * (j + k * M);
+#pragma unroll 	    
+	      double AA[KPad], BB[KPad];
+	      for(int ii=0;ii<KPad;++ii) {
+                if (ii < K) {
+		 const int offA = ii * M + offsetA;
+		 const int indJ = M * (ii + k * K) + j;
+		 AA[ii] = Ar[offA + i];
+		 BB[ii] = tJ[indJ];
+                } else {
+                 AA[ii]=0;
+                 BB[ii]=0;
+                }
+	      }
+	      double accum;
+	      accum=0;
+	      // Multiply-accumulate in r-direction
+#pragma omp simd
+#pragma unroll 
+	      for (int ii = 0; ii < KPad; ++ii) {
+		accum += AA[ii]*BB[ii];
+	      }
+	      // Write or add to C
+	      if (addToC) {
+		c[offC + i] += accum;
+	      } else {
+		c[offC + i] = accum;
+	      }
+	    }
+	  }
+	}
+     }
+   }
+  }
+ }
+
+
+// ======================================================
+// Stage 1: Compute tmpK = At * B
+// ======================================================
+@kernel void TensorProductVolumeAllGeneric_K_gt_M( const int M, const int N, const int K,
+						   const int LDB,const int LDC,
+						   @restrict const double *Ar,
+						   @restrict const double *As,
+						   @restrict const double *At,
+						   @restrict const double *B,
+						   @restrict double *C,
+						   const int offsetA,
+						   const int offsetB,
+						   const int offsetC,
+						   const bool addToC)
+ {  
+  for(int block=0; block < Nblocks; block++; @outer) {
+
+    int K3 = KPad*KPad*KPad;
+    @shared double tmpK[fac*KPad*KPad*KPad];
+    @shared double tmpJ[fac*KPad*KPad*KPad];
+    /*
+    @shared double BS[fac*KPad*KPad*KPad];
+    for(int tx=0; tx < blockDimX; tx++;@inner) {
+     for(int jj=0; jj <MPad; jj++;@inner) {
+       for(int kk=0; kk< MPad; kk++;@inner) {
+	 int l = fac*block+ tx/MPad;
+	 int ii = tx % MPad;
+	 const double *b= B + l*LDB + offsetB;
+	 for(int tid=0; tid < 4; tid++) {
+	   int i = ii + (tid%2)*MPad;
+	   int j = jj + (tid/2)*MPad;
+  	   if (i < K && j < K && l < N) {
+             for(int ik=0;ik<2;ik++) {
+                int k = 2*kk + ik;
+                if (k < K) {
+  	          int indB = K * (j + k * K) + i;
+	          int ll = (tx/MPad)*K3;
+	          BS[indB + ll] = B[l*LDB + offsetB + indB];
+                }
+	    }
+           }
+	 }	   
+       }
+     }
+   }
+   */
+   for(int tx=0; tx < blockDimX ; tx++;@inner) {
+     for(int jj=0; jj <MPad; jj++;@inner) {
+       for(int k=0; k< MPad; k++;@inner) {
+	 int l = fac*block+ tx/MPad;
+	 int ii = tx % MPad;
+	 for(int tid=0;tid<4;tid++) {
+	   int i = ii + (tid%2)*MPad;
+	   int j = jj + (tid/2)*MPad;
+	   if (i < K && j < K && k < M && l < N) {
+	      // Access tensor slices
+	     const int off = M * (j + i * K) + (tx/MPad)*K3;
+	     const double *b= B + l*LDB + offsetB;
+	     //const double *b = BS + (tx/MPad)*K3;
+	     double *tK = tmpK;
+	     double AA[KPad],BB[KPad];
+#pragma unroll 	      
+	     for(int kk=0; kk < KPad; ++kk) {
+	       const int offA = kk * M + offsetA;
+	       const int indB = K * (j + kk * K) + i;
+	       if (kk < K) {
+		 AA[kk] = At[offA + k];
+		 BB[kk] = b[indB];
+	       } else { 
+		 AA[kk]=0;
+		 BB[kk]=0;
+	       }
+	     }
+	     double sum=0;
+#pragma unroll 	      
+	     for (int kk = 0; kk < KPad; ++kk) {
+	       sum += AA[kk]*BB[kk];
+	     }
+	     tK[off+k] = sum;
+	   }
+	 }
+       }
+     }
+    }
+
+    for(int tx= 0; tx < blockDimX ; ++tx; @inner)  {
+      for (int k = 0; k < MPad; ++k; @inner) {
+	for(int j=0; j < MPad;++j; @inner) {
+	  int l = fac*block+ tx/MPad;
+	  int ii = tx % MPad;	 
+	  // this assumes M/K = 2
+	  for(int tid=0;tid < 2;tid++) {
+	    int i=ii+tid*MPad;
+	    if (i < K && j < M && k < M && l < N) {
+	      // Access slices
+	      const double *tK = tmpK + (tx/MPad)*K3;
+	      double *tJ = tmpJ;
+	      double AA[KPad], BB[KPad];
+#pragma unroll 	    
+	      for(int jj=0;jj<KPad;jj++) {
+                if (jj < K) {
+		  const int offA = jj * M + offsetA;
+		  const int indK = M * (jj + i * K) + k;
+		  AA[jj] = As[offA + j] ;
+		  BB[jj] = tK[indK];
+                } else {
+                  AA[jj]=0;
+                  BB[jj]=0;
+                }
+	      }
+	      const int off = M * (i + k * K) + (tx/MPad)*K3;
+	      double sum =0;
+#pragma unroll 	    
+	      for (int jj = 0; jj < KPad; ++jj) {
+		sum += AA[jj]*BB[jj];
+	      }
+	      tJ[off+j] =sum;
+	    }
+	  }
+	}
+      }
+    }
+
+   for(int tx=0;tx < blockDimX; tx++;@inner) {
+     for(int j=0; j < MPad; j++;@inner) {
+        for(int i=0; i< MPad; i++;@inner) {
+	  int l = fac*block+ tx/MPad;
+	  int k = tx % MPad;	 
+	  if (i < M && j < M && k < M && l < N) {
+	    // Access slices
+	    const double *tJ = tmpJ +(tx/MPad)*K3;
+	    double *c = C + l * LDC + offsetC;
+	    const int offC = M * (j + k * M);
+#pragma unroll 	    
+	    double AA[KPad], BB[KPad];
+	    for(int ii=0;ii<KPad;++ii) {
+	      if (ii < K) {
+		const int offA = ii * M + offsetA;
+		const int indJ = M * (ii + k * K) + j;
+		AA[ii] = Ar[offA + i];
+		BB[ii] = tJ[indJ];
+	      } else {
+                 AA[ii]=0;
+                 BB[ii]=0;
+	      }
+	    }
+	    double accum;
+	    accum=0;
+	    // Multiply-accumulate in r-direction
+#pragma omp simd
+#pragma unroll 
+	    for (int ii = 0; ii < KPad; ++ii) {
+	      accum += AA[ii]*BB[ii];
+	    }
+	    // Write or add to C
+	    if (addToC) {
+	      c[offC + i] += accum;
+	    } else {
+	      c[offC + i] = accum;
+	    }
+	  }
+	}
+     }
+   }
+  }
+ }

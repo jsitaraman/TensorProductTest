@@ -1,0 +1,80 @@
+@kernel void TensorProductVolumeFusedFinal(
+    const int M, const int N, const int K,
+    const int LDB, const int LDC,
+    @restrict const double *Ar,
+    @restrict const double *As,
+    @restrict const double *At,
+    @restrict const double *B,
+    @restrict double *C,
+    const int offsetA,
+    const int offsetB,
+    const int offsetC,
+    const bool addToC)
+{
+    // loop over blocks of fac elements
+    for(int block=0; block < (N+fac-1)/fac; block++; @outer) {
+      // padded loop sizes
+      const int K3 = KPad*KPad*KPad;      
+      
+      @shared double BS[fac*KPad*KPad*KPad]; // fac*KPad^3, assuming fac<=8
+      // --- Phase 1: load B into shared memory ---
+      for(int tx=0; tx<TPad; tx++; @inner) {
+	for(int j=0; j<TPad; j++; @inner)  {
+	  for(int k=0; k<TPad; k++; @inner) {
+	    
+	    int i = tx;
+	    
+	    for(int f=0; f<fac; f++) {
+	      int l = fac*block + f;
+	      
+	      if(i<K && j<K && k<K && l<N) {
+		int indB = K*(j + k*K) + i;
+		BS[f*KPad*KPad*KPad + indB] = B[l*LDB + offsetB + indB];
+	      }
+	    }
+	  }      
+         }
+        }
+        
+        // --- Phase 2: fused TP contraction into C ---
+        for(int tx=0; tx<TPad; tx++; @inner) {
+            for(int j=0; j<TPad; j++; @inner) {
+                for(int k=0; k<TPad; k++; @inner) {
+                    int i = tx;
+                    for(int f=0; f<fac; f++) {
+                        int l = fac*block + f;
+                        if(i<M && j<M && k<M && l<N) {
+			  double sum = 0.0;
+			  // --- Fully unrolled small K loops ---
+                          
+#pragma unroll
+			  for(int kk=0; kk<K; kk++) {
+				double a_t = At[kk*M + offsetA + k];
+#pragma unroll
+			    for(int jj=0; jj<K; jj++) {
+				double a_s = As[jj*M + offsetA + j];
+#pragma unroll
+			      for(int ii=0; ii<K; ii++) {
+				double a_r = Ar[ii*M + offsetA + i];
+				double bval = BS[f*KPad*KPad*KPad + K*(jj + kk*K) + ii];
+                                //int indB =  K*(jj + kk*K) + ii;
+                                //double bval = B[l*LDB + offsetB + indB];
+				sum += a_r * a_s * a_t * bval;
+				//sum += bval;
+			      }
+                            }
+                          }
+                          
+			  int offC = M*(j + k*M) + i;
+			  if(addToC)
+			    C[l*LDC + offsetC + offC] += sum;
+			  else
+			    C[l*LDC + offsetC + offC] = sum;
+                        }
+                    }
+                }
+             }
+         }
+      
+    }
+}

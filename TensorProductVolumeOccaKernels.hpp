@@ -33,6 +33,8 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
       std::string(DGX3D_OKL_DIR) + "/TensorProductAll.okl";
   std::string kpath5 = 
       std::string(DGX3D_OKL_DIR) + "/TensorProductAllGeneric.okl";
+  std::string kpath6 =
+    std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeFused_Padded.okl";
   // Build kernel with appropriate properties
   occa::properties kernelProps;
   // Define the properties for this kernel.
@@ -58,12 +60,21 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
   
   // build the generic kernel
   occa::kernel kGeneric;
-  int TPB = 128;		      
+  int TPB = 256;
   int Mp = nearestPower2(M);
   int Kp = nearestPower2(K);
+  /*
+  if (M > K) {
+    Kp = K;
+    Mp = 2*K;
+  }
+  else {
+    Mp = M;
+    Kp =2*M;
+  }*/
   props2["compiler_flags"] = "-O3"; // -lineinfo";
-  props2["defines/MPad"] = nearestPower2(M);
-  props2["defines/KPad"] = nearestPower2(K);
+  props2["defines/MPad"] = Mp;
+  props2["defines/KPad"] = Kp;
   if (M > K) {
     int Np = N*(Mp*Kp*Kp)/TPB;
     while (Np > N) {
@@ -89,22 +100,39 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
     props2["defines/fac"] = static_cast<int>(std::round(N/Np));
     kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_K_gt_M", props2);
   }
+
+  occa::kernel kTest;
+  occa::properties props3;
+  props3["compiler_flags"] = "-O3"; // -lineinfo";
+  props3["defines/MPad"] = nearestPower2(M);
+  props3["defines/KPad"] = nearestPower2(K);
+  props3["defines/TPad"] = std::max(nearestPower2(M),nearestPower2(K));
+  props3["defines/fac"] = 1;
+  printf("MPad,KPad,TPad=%d %d %d\n",nearestPower2(M),nearestPower2(K),std::max(nearestPower2(M),nearestPower2(K)));
+  kTest = device.buildKernel(kpath6, "TensorProductVolumeFusedFinal", props3);
+  
 #if TIMER
   Timer stopwatch;
   stopwatch.tick();
   int add_to_C = addToC;
   for (int itry = 0; itry < NTRYS; itry++) {
 #endif
+    //kTest(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+#if 1
     if (pow2kernel) {
       kPow2(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
     }
     else {
       kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
     }
+#endif
 #if TIMER
   }
   auto duration=stopwatch.tock()/ NTRYS;
-  double FLOPS = (2*N-1)*(K*K*M + K*M*M + M*M*M)/duration/1e12;
+  double FLOP = (2*N-1)*(K*K*M + K*M*M + M*M*M);
+  double FLOPS = FLOP/duration/1e12;
+  double BYTES = N*(8*K*K*K + 3*K*M*8 + 8*M*M*M);
+  printf("Arithmetic intensity (FLOP/BYTES) = %f\n", FLOP/BYTES);
   printf("OCCA unified kernel Compute time = %e TFLOPS=%.2f\n", stopwatch.tock() / NTRYS, FLOPS);
 #endif
   // copy back
