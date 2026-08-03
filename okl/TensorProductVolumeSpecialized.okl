@@ -1,0 +1,283 @@
+// Specialized fused tensor product kernel for M = 2*K (forward direction).
+// All loop bounds are compile-time constants allowing full unrolling and
+// eliminating bounds checks. Operators are cached in shared memory.
+//
+// Compile-time defines: Mc (= 2*Kc), Kc, fac.
+// Runtime parameters: N, LDB, LDC (M and K accepted for unified dispatch).
+@kernel void TensorProductVolumeSpecialized_M_gt_K(
+    const int M, const int N, const int K,
+    const int LDB, const int LDC,
+    @restrict const float_t *Arr,
+    @restrict const float_t *Ass,
+    @restrict const float_t *Att,
+    @restrict const float_t *B,
+    @restrict float_t *C,
+    const int addToC) {
+
+  for (int block = 0; block < (N + fac - 1) / fac; block++; @outer) {
+
+    @shared float_t tmpK[fac * Kc * Kc * Mc];
+    @shared float_t tmpJ[fac * Kc * Mc * Mc];
+    @shared float_t BS[fac * Kc * Kc * Kc];
+    @shared float_t At[Kc * Mc], Ar[Kc * Mc], As[Kc * Mc];
+
+    // Load operators into shared memory and load B into BS.
+    for (int tx = 0; tx < fac * Kc; tx++; @inner) {
+      for (int j = 0; j < Kc; j++; @inner) {
+        for (int i = 0; i < Mc; i++; @inner) {
+          const int f = tx / Kc;
+          const int k = tx % Kc;
+          const int l = fac * block + f;
+          if (f == 0 && k == 0) {
+            Ar[j * Mc + i] = Arr[j * Mc + i];
+            As[j * Mc + i] = Ass[j * Mc + i];
+            At[j * Mc + i] = Att[j * Mc + i];
+          }
+          if (i < Kc && l < N) {
+            const int indB = Kc * (j + k * Kc) + i;
+            BS[indB + f * Kc * Kc * Kc] = B[l * LDB + indB];
+          }
+        }
+      }
+    }
+
+    // Stage 1: tmpK = At * B (contraction in t-direction)
+    for (int tx = 0; tx < fac * Kc; tx++; @inner) {
+      for (int j = 0; j < Kc; j++; @inner) {
+        for (int k = 0; k < Mc; k++; @inner) {
+          const int f = tx / Kc;
+          const int i = tx % Kc;
+          const int l = fac * block + f;
+          if (l < N) {
+            const int off = Mc * (j + i * Kc) + f * Kc * Kc * Mc;
+            const float_t *b = BS + f * Kc * Kc * Kc;
+            float_t AA[Kc], BB[Kc];
+#pragma unroll
+            for (int kk = 0; kk < Kc; ++kk) {
+              AA[kk] = At[kk * Mc + k];
+              BB[kk] = b[Kc * (j + kk * Kc) + i];
+            }
+            float_t sum = FLOAT_T(0.0);
+#pragma unroll
+            for (int kk = 0; kk < Kc; ++kk) {
+              sum += AA[kk] * BB[kk];
+            }
+            tmpK[off + k] = sum;
+          }
+        }
+      }
+    }
+
+    // Stage 2: tmpJ = As * tmpK (contraction in s-direction)
+    // Mc = 2*Kc, so tid loop of 2 covers the full M range.
+    for (int tx = 0; tx < fac * Kc; tx++; @inner) {
+      for (int kk = 0; kk < Kc; kk++; @inner) {
+        for (int j = 0; j < Mc; j++; @inner) {
+          const int f = tx / Kc;
+          const int i = tx % Kc;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 2; tid++) {
+              const int k = kk + tid * Kc;
+              const float_t *tK = tmpK + f * Kc * Kc * Mc;
+              float_t AA[Kc], BB[Kc];
+#pragma unroll
+              for (int jj = 0; jj < Kc; jj++) {
+                AA[jj] = As[jj * Mc + j];
+                BB[jj] = tK[Mc * (jj + i * Kc) + k];
+              }
+              const int off = Mc * (i + k * Kc) + f * Kc * Mc * Mc;
+              float_t sum = FLOAT_T(0.0);
+#pragma unroll
+              for (int jj = 0; jj < Kc; ++jj) {
+                sum += AA[jj] * BB[jj];
+              }
+              tmpJ[off + j] = sum;
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 3: C = Ar * tmpJ (contraction in r-direction)
+    // Mc = 2*Kc, so tid loop of 4 covers the full M x M range for (j,k).
+    for (int tx = 0; tx < fac * Kc; tx++; @inner) {
+      for (int jj = 0; jj < Kc; jj++; @inner) {
+        for (int i = 0; i < Mc; i++; @inner) {
+          const int f = tx / Kc;
+          const int kk = tx % Kc;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 4; tid++) {
+              const int k = kk + (tid % 2) * Kc;
+              const int j = jj + (tid / 2) * Kc;
+              const float_t *tJ = tmpJ + f * Kc * Mc * Mc;
+              float_t *c = C + l * LDC;
+              const int offC = Mc * (j + k * Mc);
+              float_t AA[Kc], BB[Kc];
+#pragma unroll
+              for (int ii = 0; ii < Kc; ++ii) {
+                AA[ii] = Ar[ii * Mc + i];
+                BB[ii] = tJ[Mc * (ii + k * Kc) + j];
+              }
+              float_t accum = FLOAT_T(0.0);
+#pragma unroll
+              for (int ii = 0; ii < Kc; ++ii) {
+                accum += AA[ii] * BB[ii];
+              }
+              if (addToC) {
+                c[offC + i] += accum;
+              } else {
+                c[offC + i] = accum;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Specialized fused tensor product kernel for K = 2*M (backward direction).
+// All loop bounds are compile-time constants allowing full unrolling and
+// eliminating bounds checks. Operators are cached in shared memory.
+//
+// Compile-time defines: Mc, Kc (= 2*Mc), fac.
+// Runtime parameters: N, LDB, LDC (M and K accepted for unified dispatch).
+@kernel void TensorProductVolumeSpecialized_K_gt_M(
+    const int M, const int N, const int K,
+    const int LDB, const int LDC,
+    @restrict const float_t *Arr,
+    @restrict const float_t *Ass,
+    @restrict const float_t *Att,
+    @restrict const float_t *B,
+    @restrict float_t *C,
+    const int addToC) {
+
+  for (int block = 0; block < (N + fac - 1) / fac; block++; @outer) {
+
+    @shared float_t tmpK[fac * Kc * Kc * Mc];
+    @shared float_t tmpJ[fac * Kc * Mc * Mc];
+    @shared float_t At[Kc * Mc], Ar[Kc * Mc], As[Kc * Mc];
+
+    // Load operators into shared memory and compute Stage 1 in the same pass.
+    // Stage 1: tmpK = At * B (contraction in t-direction)
+    // Kc = 2*Mc, so tid loop of 4 covers the full K x K range for (i,j).
+    for (int tx = 0; tx < fac * Mc; tx++; @inner) {
+      for (int jj = 0; jj < Mc; jj++; @inner) {
+        for (int ii = 0; ii < Mc; ii++; @inner) {
+          const int f = tx / Mc;
+          const int k = tx % Mc;
+          const int l = fac * block + f;
+          for (int tid = 0; tid < 4; tid++) {
+            const int i = ii + (tid % 2) * Mc;
+            const int j = jj + (tid / 2) * Mc;
+            // Load operators once.
+            if (f == 0 && k == 0) {
+              Ar[j * Mc + ii] = Arr[j * Mc + ii];
+              As[j * Mc + ii] = Ass[j * Mc + ii];
+              At[j * Mc + ii] = Att[j * Mc + ii];
+            }
+          }
+          // Barrier between operator load and stage 1 is implicit in OKL
+          // between @inner blocks. Operators are loaded above; stage 1 below
+          // reads them after the sync.
+        }
+      }
+    }
+
+    for (int tx = 0; tx < fac * Mc; tx++; @inner) {
+      for (int jj = 0; jj < Mc; jj++; @inner) {
+        for (int k = 0; k < Mc; k++; @inner) {
+          const int f = tx / Mc;
+          const int ii = tx % Mc;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 4; tid++) {
+              const int i = ii + (tid % 2) * Mc;
+              const int j = jj + (tid / 2) * Mc;
+              const int off = Mc * (j + i * Kc) + f * Kc * Kc * Mc;
+              @restrict const float_t *b = B + l * LDB;
+              float_t AA[Kc], BB[Kc];
+#pragma unroll
+              for (int kk = 0; kk < Kc; ++kk) {
+                AA[kk] = At[kk * Mc + k];
+                BB[kk] = b[Kc * (j + kk * Kc) + i];
+              }
+              float_t sum = FLOAT_T(0.0);
+#pragma unroll
+              for (int kk = 0; kk < Kc; ++kk) {
+                sum += AA[kk] * BB[kk];
+              }
+              tmpK[off + k] = sum;
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 2: tmpJ = As * tmpK (contraction in s-direction)
+    // Kc = 2*Mc, so tid loop of 2 covers the full K range for i.
+    for (int tx = 0; tx < fac * Mc; tx++; @inner) {
+      for (int k = 0; k < Mc; k++; @inner) {
+        for (int j = 0; j < Mc; j++; @inner) {
+          const int f = tx / Mc;
+          const int ii = tx % Mc;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 2; tid++) {
+              const int i = ii + tid * Mc;
+              const float_t *tK = tmpK + f * Kc * Kc * Mc;
+              float_t AA[Kc], BB[Kc];
+#pragma unroll
+              for (int jj = 0; jj < Kc; jj++) {
+                AA[jj] = As[jj * Mc + j];
+                BB[jj] = tK[Mc * (jj + i * Kc) + k];
+              }
+              const int off = Mc * (i + k * Kc) + f * Kc * Mc * Mc;
+              float_t sum = FLOAT_T(0.0);
+#pragma unroll
+              for (int jj = 0; jj < Kc; ++jj) {
+                sum += AA[jj] * BB[jj];
+              }
+              tmpJ[off + j] = sum;
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 3: C = Ar * tmpJ (contraction in r-direction)
+    // Output is M x M x M, no tid loop needed.
+    for (int tx = 0; tx < fac * Mc; tx++; @inner) {
+      for (int j = 0; j < Mc; j++; @inner) {
+        for (int i = 0; i < Mc; i++; @inner) {
+          const int f = tx / Mc;
+          const int k = tx % Mc;
+          const int l = fac * block + f;
+          if (l < N) {
+            const float_t *tJ = tmpJ + f * Kc * Mc * Mc;
+            float_t *c = C + l * LDC;
+            const int offC = Mc * (j + k * Mc);
+            float_t AA[Kc], BB[Kc];
+#pragma unroll
+            for (int ii = 0; ii < Kc; ++ii) {
+              AA[ii] = Ar[ii * Mc + i];
+              BB[ii] = tJ[Mc * (ii + k * Kc) + j];
+            }
+            float_t accum = FLOAT_T(0.0);
+#pragma unroll
+            for (int ii = 0; ii < Kc; ++ii) {
+              accum += AA[ii] * BB[ii];
+            }
+            if (addToC) {
+              c[offC + i] += accum;
+            } else {
+              c[offC + i] = accum;
+            }
+          }
+        }
+      }
+    }
+  }
+}

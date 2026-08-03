@@ -35,6 +35,8 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
       std::string(DGX3D_OKL_DIR) + "/TensorProductAllGeneric.okl";
   std::string kpath6 =
     std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeFused_Padded.okl";
+  std::string kpath7 =
+    std::string(DGX3D_OKL_DIR) + "/TensorProductVolumeFused.okl";
   // Build kernel with appropriate properties
   occa::properties kernelProps;
   // Define the properties for this kernel.
@@ -86,7 +88,8 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
     if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
     props2["defines/Nblocks"] = Np;
     props2["defines/fac"] = static_cast<int>(std::round(N/Np));
-    kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_M_gt_K", props2);
+    //kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_M_gt_K", props2);
+    kGeneric = device.buildKernel(kpath7,"TensorProductVolumeFused_M_ge_K",props2); 
   } else {
     int Np = N*(Mp*Mp*Mp)/TPB;
     while (Np > N) {
@@ -98,7 +101,9 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
     if (!pow2kernel) printf("Using TPB = %d and fac=%d\n",TPB,static_cast<int>(std::round(N/Np)));
     props2["defines/Nblocks"] = Np;
     props2["defines/fac"] = static_cast<int>(std::round(N/Np));
-    kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_K_gt_M", props2);
+    props2["defines/float_t"] = "double";
+    //kGeneric = device.buildKernel(kpath5, "TensorProductVolumeAllGeneric_K_gt_M", props2);
+    kGeneric = device.buildKernel(kpath7, "TensorProductVolumeFused_K_gt_M", props2);
   }
 
   occa::kernel kTest;
@@ -123,7 +128,8 @@ void TensorProductVolumeOCCA(occa::device &device, int M, int MPad, int N,
       kPow2(LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
     }
     else {
-      kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+      //kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,0,0,0,add_to_C);
+      kGeneric(M,N,K,LDB,LDC,d_Ar,d_As,d_At,d_B,d_C,add_to_C);
     }
 #endif
 #if TIMER

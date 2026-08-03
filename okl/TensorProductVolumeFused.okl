@@ -1,0 +1,288 @@
+// Fused tensor product kernel for the case M >= K (forward direction).
+// Computes C = Ar * (As * (At * B)) in a single kernel launch using shared
+// memory for intermediates. No global workspace memory is needed.
+//
+// Compile-time defines: MPad, KPad (nearest power-of-2 of M and K), fac
+// (number of elements batched per block).
+// Runtime parameters: M, N, K, LDB, LDC.
+#define FLOAT_T(a) (a)
+@kernel void TensorProductVolumeFused_M_ge_K(
+    const int M, const int N, const int K,
+    const int LDB, const int LDC,
+    @restrict const double *Ar,
+    @restrict const double *As,
+    @restrict const double *At,
+    @restrict const double *B,
+    @restrict double *C,
+    const int addToC) {
+
+  for (int block = 0; block < (N + fac - 1) / fac; block++; @outer) {
+
+    @shared double tmpK[fac * MPad * MPad * MPad];
+    @shared double tmpJ[fac * MPad * MPad * MPad];
+    @shared double BS[fac * KPad * KPad * KPad];
+
+    // Load B into shared memory.
+    for (int tx = 0; tx < fac * KPad; tx++; @inner) {
+      for (int j = 0; j < KPad; j++; @inner) {
+        for (int k = 0; k < MPad; k++; @inner) {
+          const int f = tx / KPad;
+          const int i = tx % KPad;
+          const int l = fac * block + f;
+          if (j < K && k < K && i < K && l < N) {
+            const int indB = K * (j + k * K) + i;
+            BS[indB + f * KPad * KPad * KPad] = B[l * LDB + indB];
+          }
+        }
+      }
+    }
+
+    // Stage 1: tmpK = At * B (contraction in t-direction)
+    for (int tx = 0; tx < fac * KPad; tx++; @inner) {
+      for (int j = 0; j < KPad; j++; @inner) {
+        for (int k = 0; k < MPad; k++; @inner) {
+          const int f = tx / KPad;
+          const int i = tx % KPad;
+          const int l = fac * block + f;
+          if (i < K && j < K && k < M && l < N) {
+            const int off = M * (j + i * K) + f * MPad * MPad * MPad;
+            const double *b = BS + f * KPad * KPad * KPad;
+            double AA[KPad], BB[KPad];
+#pragma unroll
+            for (int kk = 0; kk < KPad; ++kk) {
+              if (kk < K) {
+                AA[kk] = At[kk * M + k];
+                BB[kk] = b[K * (j + kk * K) + i];
+              } else {
+                AA[kk] = FLOAT_T(0.0);
+                BB[kk] = FLOAT_T(0.0);
+              }
+            }
+            double sum = FLOAT_T(0.0);
+#pragma unroll
+            for (int kk = 0; kk < KPad; ++kk) {
+              sum += AA[kk] * BB[kk];
+            }
+            tmpK[off + k] = sum;
+          }
+        }
+      }
+    }
+
+    // Stage 2: tmpJ = As * tmpK (contraction in s-direction)
+    for (int tx = 0; tx < fac * KPad; tx++; @inner) {
+      for (int kk = 0; kk < KPad; kk++; @inner) {
+        for (int j = 0; j < MPad; j++; @inner) {
+          const int f = tx / KPad;
+          const int i = tx % KPad;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 2; tid++) {
+              int k = kk + tid * KPad;
+              if (i < K && j < M && k < M) {
+                const double *tK = tmpK + f * MPad * MPad * MPad;
+                double AA[KPad], BB[KPad];
+#pragma unroll
+                for (int jj = 0; jj < KPad; jj++) {
+                  if (jj < K) {
+                    AA[jj] = As[jj * M + j];
+                    BB[jj] = tK[M * (jj + i * K) + k];
+                  } else {
+                    AA[jj] = FLOAT_T(0.0);
+                    BB[jj] = FLOAT_T(0.0);
+                  }
+                }
+                const int off = M * (i + k * K) + f * MPad * MPad * MPad;
+                double sum = FLOAT_T(0.0);
+#pragma unroll
+                for (int jj = 0; jj < KPad; ++jj) {
+                  sum += AA[jj] * BB[jj];
+                }
+                tmpJ[off + j] = sum;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 3: C = Ar * tmpJ (contraction in r-direction)
+    for (int tx = 0; tx < fac * KPad; tx++; @inner) {
+      for (int jj = 0; jj < KPad; jj++; @inner) {
+        for (int i = 0; i < MPad; i++; @inner) {
+          const int f = tx / KPad;
+          const int kk = tx % KPad;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 4; tid++) {
+              int k = kk + (tid % 2) * KPad;
+              int j = jj + (tid / 2) * KPad;
+              if (i < M && j < M && k < M) {
+                double *c = C + l * LDC;
+                const int offC = M * (j + k * M);
+                const double *tJ = tmpJ + f * MPad * MPad * MPad;
+                double AA[KPad], BB[KPad];
+#pragma unroll
+                for (int ii = 0; ii < KPad; ++ii) {
+                  if (ii < K) {
+                    AA[ii] = Ar[ii * M + i];
+                    BB[ii] = tJ[M * (ii + k * K) + j];
+                  } else {
+                    AA[ii] = FLOAT_T(0.0);
+                    BB[ii] = FLOAT_T(0.0);
+                  }
+                }
+                double accum = FLOAT_T(0.0);
+#pragma unroll
+                for (int ii = 0; ii < KPad; ++ii) {
+                  accum += AA[ii] * BB[ii];
+                }
+                if (addToC) {
+                  c[offC + i] += accum;
+                } else {
+                  c[offC + i] = accum;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Fused tensor product kernel for the case K > M (backward direction).
+// Computes C = Ar * (As * (At * B)) in a single kernel launch using shared
+// memory for intermediates. No global workspace memory is needed.
+//
+// Compile-time defines: MPad, KPad (nearest power-of-2 of M and K), fac
+// (number of elements batched per block).
+// Runtime parameters: M, N, K, LDB, LDC.
+@kernel void TensorProductVolumeFused_K_gt_M(
+    const int M, const int N, const int K,
+    const int LDB, const int LDC,
+    @restrict const double *Ar,
+    @restrict const double *As,
+    @restrict const double *At,
+    @restrict const double *B,
+    @restrict double *C,
+    const int addToC) {
+
+  for (int block = 0; block < (N + fac - 1) / fac; block++; @outer) {
+
+    @shared double tmpK[fac * KPad * KPad * KPad];
+    @shared double tmpJ[fac * KPad * KPad * KPad];
+
+    // Stage 1: tmpK = At * B (contraction in t-direction)
+    for (int tx = 0; tx < fac * MPad; tx++; @inner) {
+      for (int jj = 0; jj < MPad; jj++; @inner) {
+        for (int k = 0; k < MPad; k++; @inner) {
+          const int f = tx / MPad;
+          const int ii = tx % MPad;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 4; tid++) {
+              int i = ii + (tid % 2) * MPad;
+              int j = jj + (tid / 2) * MPad;
+              if (i < K && j < K && k < M) {
+                const int off = M * (j + i * K) + f * KPad * KPad * KPad;
+                @restrict const double *b = B + l * LDB;
+                double AA[KPad], BB[KPad];
+#pragma unroll
+                for (int kk = 0; kk < KPad; ++kk) {
+                  if (kk < K) {
+                    AA[kk] = At[kk * M + k];
+                    BB[kk] = b[K * (j + kk * K) + i];
+                  } else {
+                    AA[kk] = FLOAT_T(0.0);
+                    BB[kk] = FLOAT_T(0.0);
+                  }
+                }
+                double sum = FLOAT_T(0.0);
+#pragma unroll
+                for (int kk = 0; kk < KPad; ++kk) {
+                  sum += AA[kk] * BB[kk];
+                }
+                tmpK[off + k] = sum;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 2: tmpJ = As * tmpK (contraction in s-direction)
+    for (int tx = 0; tx < fac * MPad; tx++; @inner) {
+      for (int k = 0; k < MPad; k++; @inner) {
+        for (int j = 0; j < MPad; j++; @inner) {
+          const int f = tx / MPad;
+          const int ii = tx % MPad;
+          const int l = fac * block + f;
+          if (l < N) {
+            for (int tid = 0; tid < 2; tid++) {
+              int i = ii + tid * MPad;
+              if (i < K && j < M && k < M) {
+                const double *tK = tmpK + f * KPad * KPad * KPad;
+                double AA[KPad], BB[KPad];
+#pragma unroll
+                for (int jj = 0; jj < KPad; jj++) {
+                  if (jj < K) {
+                    AA[jj] = As[jj * M + j];
+                    BB[jj] = tK[M * (jj + i * K) + k];
+                  } else {
+                    AA[jj] = FLOAT_T(0.0);
+                    BB[jj] = FLOAT_T(0.0);
+                  }
+                }
+                const int off = M * (i + k * K) + f * KPad * KPad * KPad;
+                double sum = FLOAT_T(0.0);
+#pragma unroll
+                for (int jj = 0; jj < KPad; ++jj) {
+                  sum += AA[jj] * BB[jj];
+                }
+                tmpJ[off + j] = sum;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Stage 3: C = Ar * tmpJ (contraction in r-direction)
+    for (int tx = 0; tx < fac * MPad; tx++; @inner) {
+      for (int j = 0; j < MPad; j++; @inner) {
+        for (int i = 0; i < MPad; i++; @inner) {
+          const int f = tx / MPad;
+          const int k = tx % MPad;
+          const int l = fac * block + f;
+          if (i < M && j < M && k < M && l < N) {
+            double *c = C + l * LDC;
+            const int offC = M * (j + k * M);
+            const double *tJ = tmpJ + f * KPad * KPad * KPad;
+            double AA[KPad], BB[KPad];
+#pragma unroll
+            for (int ii = 0; ii < KPad; ++ii) {
+              if (ii < K) {
+                AA[ii] = Ar[ii * M + i];
+                BB[ii] = tJ[M * (ii + k * K) + j];
+              } else {
+                AA[ii] = FLOAT_T(0.0);
+                BB[ii] = FLOAT_T(0.0);
+              }
+            }
+            double accum = FLOAT_T(0.0);
+#pragma unroll
+            for (int ii = 0; ii < KPad; ++ii) {
+              accum += AA[ii] * BB[ii];
+            }
+            if (addToC) {
+              c[offC + i] += accum;
+            } else {
+              c[offC + i] = accum;
+            }
+          }
+        }
+      }
+    }
+  }
+}

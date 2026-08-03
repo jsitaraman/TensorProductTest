@@ -150,6 +150,7 @@ int main(int argc, char **argv) {
                                 C_occa, addToC);
   maxAbsDiff(C_gemm, C_occa, "original", "occa");
 #endif
+  std:: cout << "Hit hardware limit for split_OCCA kernel" << std::endl;
 
   // TODO does not work yet
   if (use_gpu) {
