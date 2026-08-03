@@ -31,7 +31,7 @@ void cutensorWrap(occa::device &device, int M, int N, int K,
 #if TIMER
   }
   auto duration=stopwatch.tock()/ (NTRYS-1);
-  double FLOPS = (2*N-1)*(K*K*M + K*M*M + M*M*M)/duration/1e12;
+  double FLOPS = (double)N * (2*K - 1) * (K*K*M + K*M*M + M*M*M)/duration/1e12;
   printf("cutensor time = %e TFLOPS=%.2f\n", duration,FLOPS);
 #endif
   d_C.copyTo(C.data());

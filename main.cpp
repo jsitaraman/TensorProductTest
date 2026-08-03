@@ -145,12 +145,12 @@ int main(int argc, char **argv) {
   ///////////////////////////////////////////////////////////
   // run occa implementation
   ///////////////////////////////////////////////////////////
-#if 0
+#if 1
   TensorProductVolumeSplit_OCCA(device, M, MPad, N, K, LDB, LDC, Ar, As, At, B,
                                 C_occa, addToC);
   maxAbsDiff(C_gemm, C_occa, "original", "occa");
+  //std:: cout << "Hit hardware limit for split_OCCA kernel" << std::endl;
 #endif
-  std:: cout << "Hit hardware limit for split_OCCA kernel" << std::endl;
 
   // TODO does not work yet
   if (use_gpu) {
